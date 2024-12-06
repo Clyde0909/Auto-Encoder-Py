@@ -46,6 +46,8 @@ def main():
   file_list = get_file_list(target_dir)
   file_info = {file: get_file_info(file) for file in file_list}
 
+  failed_to_encode = []
+
   for file in file_info:
     try:
       output_file = encode_video(file, file_info[file]["bitrate"])
@@ -55,12 +57,18 @@ def main():
       total_size_modified += modified_file_size
     except Exception as e:
       print(f"Error: {e}")
+      failed_to_encode.append(file)
       continue
 
   print("Encoding complete")
   print(f"Total original file size: {round(total_size_original, 2)}MB")
   print(f"Total modified file size: {round(total_size_modified, 2)}MB")
   print(f"Total size difference: {round((total_size_modified - total_size_original), 2)}MB")
+
+  if failed_to_encode:
+    print(f"Failed to encode {len(failed_to_encode)} files:")
+    for file in failed_to_encode:
+      print(file)
 
 if __name__ == "__main__":
   main()
