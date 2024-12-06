@@ -12,9 +12,9 @@ def get_file_info(file):
     "bitrate": ffmpeg.probe(file)["streams"][0]["bit_rate"]
   }
 
-def encode_video(file, bitrate):
+def encode_video(file, bitrate, multiplier):
   output_file = file.replace(".", "_modified.")
-  target_bitrate = int(int(bitrate) * 0.75)
+  target_bitrate = int(int(bitrate) * multiplier)
   ffmpeg.input(file).output(output_file, vcodec='hevc_amf', crf=25, b=target_bitrate, loglevel='quiet').global_args('-hwaccel', 'auto').run()
   return output_file
 
@@ -24,7 +24,7 @@ def compare_files(file1, file2, delete_original):
 
   print(f"{file1} size: {round(file1_size, 2)}MB")
   print(f"{file2} size: {round(file2_size, 2)}MB")
-  print(f"File size difference: {round((file2_size - file1_size), 2)}MB")
+  print(f"File size difference: {round((file2_size - file1_size), 2)}MB ({round((file2_size / file1_size * 100), 2)}%)")
 
   if delete_original.lower() == "y":
     os.remove(file1)
@@ -50,7 +50,7 @@ def main():
 
   for file in file_info:
     try:
-      output_file = encode_video(file, file_info[file]["bitrate"])
+      output_file = encode_video(file, file_info[file]["bitrate"], target_bitrate_multiplier)
       modified_file_size = compare_files(file, output_file, delete_original)
 
       total_size_original += file_info[file]["size"] / 1024 / 1024
@@ -63,7 +63,7 @@ def main():
   print("Encoding complete")
   print(f"Total original file size: {round(total_size_original, 2)}MB")
   print(f"Total modified file size: {round(total_size_modified, 2)}MB")
-  print(f"Total size difference: {round((total_size_modified - total_size_original), 2)}MB")
+  print(f"Total size difference: {round((total_size_modified - total_size_original), 2)}MB ({round((total_size_modified / total_size_original * 100), 2)}%)")
 
   if failed_to_encode:
     print(f"Failed to encode {len(failed_to_encode)} files:")
