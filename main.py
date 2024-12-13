@@ -31,6 +31,12 @@ def compare_files(file1, file2, delete_original):
     print(f"{file1} deleted")
   return file2_size
 
+def remove_failed_files(failed_files):
+  for file in failed_files:
+    # remove the failed encoding
+    print(f"Removing {file.replace(".", "_modified.")} (failed to encode)")
+    os.remove(file.replace(".", "_modified."))
+
 def main():
   total_size_original = 0
   total_size_modified = 0
@@ -63,12 +69,12 @@ def main():
   print("Encoding complete")
   print(f"Total original file size: {round(total_size_original, 2)}MB")
   print(f"Total modified file size: {round(total_size_modified, 2)}MB")
-  print(f"Total size difference: {round((total_size_modified - total_size_original), 2)}MB ({round((total_size_modified / total_size_original * 100), 2)}%)")
+  if total_size_modified > 0:
+    print(f"Total size difference: {round((total_size_modified - total_size_original), 2)}MB ({round((total_size_modified / total_size_original * 100), 2)}%)")
 
   if failed_to_encode:
     print(f"Failed to encode {len(failed_to_encode)} files:")
-    for file in failed_to_encode:
-      print(file)
+    remove_failed_files(failed_to_encode)
 
 if __name__ == "__main__":
   main()
