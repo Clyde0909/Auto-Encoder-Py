@@ -7,10 +7,15 @@ def get_file_list(target_dir):
 
 def get_file_info(file):
   print(f"Getting information for {file}")
-  return {
-    "size": os.path.getsize(file),
-    "bitrate": ffmpeg.probe(file)["streams"][0]["bit_rate"]
-  }
+  try:
+    size = os.path.getsize(file)
+    bitrate = ffmpeg.probe(file)["streams"][0]["bit_rate"]
+    return {
+      "size": size,
+      "bitrate": bitrate
+    }
+  except Exception as e:
+    print(f"Error getting file info for {file}: {e}")
 
 def encode_video(file, bitrate, multiplier):
   output_file = file.replace(".", "_modified.")
@@ -54,7 +59,8 @@ def main():
 
   failed_to_encode = []
 
-  for file in file_info:
+  total_files = len(file_info)
+  for index, file in enumerate(file_info, start=1):
     try:
       output_file = encode_video(file, file_info[file]["bitrate"], target_bitrate_multiplier)
       modified_file_size = compare_files(file, output_file, delete_original)
@@ -65,6 +71,7 @@ def main():
       print(f"Error: {e}")
       failed_to_encode.append(file)
       continue
+    print(f"Processed {index}/{total_files} files ({round((index / total_files) * 100, 2)}%)")
 
   print("Encoding complete")
   print(f"Total original file size: {round(total_size_original, 2)}MB")
@@ -74,7 +81,10 @@ def main():
 
   if failed_to_encode:
     print(f"Failed to encode {len(failed_to_encode)} files:")
-    remove_failed_files(failed_to_encode)
+    try:
+      remove_failed_files(failed_to_encode)
+    except Exception as e:
+      print(f"Error removing failed files: {e}")
 
 if __name__ == "__main__":
   main()
