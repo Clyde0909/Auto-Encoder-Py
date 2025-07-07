@@ -1,0 +1,415 @@
+"""
+Progress display module providing real-time responsive shell interface.
+Uses Rich library for beautiful progress bars and status updates.
+"""
+
+import time
+import threading
+from typing import Dict, List, Optional, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from contextlib import contextmanager
+
+try:
+    from rich.console import Console
+    from rich.progress import (
+        Progress, TaskID, BarColumn, TextColumn, TimeRemainingColumn,
+        TimeElapsedColumn, MofNCompleteColumn, SpinnerColumn
+    )
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from rich.live import Live
+    from rich.text import Text
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+
+@dataclass
+class FileProcessingStats:
+    """Statistics for file processing"""
+    filename: str
+    original_size_mb: float = 0.0
+    encoded_size_mb: float = 0.0
+    original_bitrate: int = 0
+    target_bitrate: int = 0
+    encoding_time: float = 0.0
+    compression_ratio: float = 0.0
+    status: str = "pending"
+    error_message: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+
+@dataclass
+class SessionStats:
+    """Overall session statistics"""
+    total_files: int = 0
+    completed_files: int = 0
+    failed_files: int = 0
+    total_original_size_mb: float = 0.0
+    total_encoded_size_mb: float = 0.0
+    total_encoding_time: float = 0.0
+    session_start: datetime = field(default_factory=datetime.now)
+    current_file: Optional[str] = None
+    estimated_time_remaining: Optional[timedelta] = None
+
+
+class ProgressDisplay:
+    """Rich-based progress display for video encoding"""
+    
+    def __init__(self, use_rich: bool = True):
+        self.use_rich = use_rich and RICH_AVAILABLE
+        self.console = Console() if self.use_rich else None
+        self.progress = None
+        self.live = None
+        self.layout = None
+        
+        # Progress tracking
+        self.overall_task_id = None  # Optional[TaskID]
+        self.current_task_id = None  # Optional[TaskID]
+        self.file_stats: List[FileProcessingStats] = []
+        self.session_stats = SessionStats()
+        
+        # Threading
+        self._stop_event = threading.Event()
+        self._update_thread: Optional[threading.Thread] = None
+        
+    def initialize_session(self, total_files: int, file_list: List[str]):
+        """Initialize the progress session"""
+        self.session_stats.total_files = total_files
+        self.session_stats.session_start = datetime.now()
+        
+        # Initialize file stats
+        self.file_stats = [
+            FileProcessingStats(filename=filename)
+            for filename in file_list
+        ]
+        
+        if self.use_rich:
+            self._setup_rich_display()
+        else:
+            self._setup_simple_display()
+    
+    def _setup_rich_display(self):
+        """Setup Rich-based display"""
+        # Create progress bars
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            console=self.console,
+            expand=True
+        )
+        
+        # Create layout
+        self.layout = Layout()
+        self.layout.split(
+            Layout(name="header", size=3),
+            Layout(name="main", ratio=1),
+            Layout(name="footer", size=8)
+        )
+        
+        # Add overall progress task
+        self.overall_task_id = self.progress.add_task(
+            "Overall Progress", total=self.session_stats.total_files
+        )
+    
+    def _setup_simple_display(self):
+        """Setup simple text-based display"""
+        print(f"Starting encoding session: {self.session_stats.total_files} files")
+        print("-" * 50)
+    
+    @contextmanager
+    def live_display(self):
+        """Context manager for live display"""
+        if self.use_rich:
+            with Live(self.layout, console=self.console, refresh_per_second=2) as live:
+                self.live = live
+                self._start_update_thread()
+                try:
+                    yield
+                finally:
+                    self._stop_update_thread()
+        else:
+            yield
+    
+    def _start_update_thread(self):
+        """Start the display update thread"""
+        self._stop_event.clear()
+        self._update_thread = threading.Thread(target=self._update_display_loop)
+        self._update_thread.daemon = True
+        self._update_thread.start()
+    
+    def _stop_update_thread(self):
+        """Stop the display update thread"""
+        if self._update_thread:
+            self._stop_event.set()
+            self._update_thread.join(timeout=1.0)
+    
+    def _update_display_loop(self):
+        """Main display update loop"""
+        while not self._stop_event.is_set():
+            if self.use_rich and self.live:
+                self._update_rich_layout()
+            time.sleep(0.25)
+    
+    def _update_rich_layout(self):
+        """Update the Rich layout"""
+        # Header
+        header_text = Text(
+            f"Video Encoder - Session started at {self.session_stats.session_start.strftime('%H:%M:%S')}",
+            style="bold magenta"
+        )
+        self.layout["header"].update(Panel(header_text, box=box.ROUNDED))
+        
+        # Main progress area
+        self.layout["main"].update(Panel(self.progress, title="Progress", box=box.ROUNDED))
+        
+        # Footer with statistics
+        stats_table = self._create_stats_table()
+        self.layout["footer"].update(Panel(stats_table, title="Statistics", box=box.ROUNDED))
+    
+    def _create_stats_table(self) -> Table:
+        """Create statistics table"""
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Metric", style="white")
+        table.add_column("Value", style="green")
+        
+        # Calculate statistics
+        completed = self.session_stats.completed_files
+        failed = self.session_stats.failed_files
+        total = self.session_stats.total_files
+        
+        # Time calculations
+        elapsed = datetime.now() - self.session_stats.session_start
+        avg_time_per_file = (elapsed.total_seconds() / completed) if completed > 0 else 0
+        remaining_files = total - completed - failed
+        estimated_remaining = timedelta(seconds=avg_time_per_file * remaining_files) if avg_time_per_file > 0 else None
+        
+        # Size calculations
+        total_original = self.session_stats.total_original_size_mb
+        total_encoded = self.session_stats.total_encoded_size_mb
+        compression_ratio = (total_encoded / total_original * 100) if total_original > 0 else 0
+        
+        # Add rows
+        table.add_row("Progress", f"{completed}/{total} files completed")
+        table.add_row("Success Rate", f"{completed - failed}/{completed + failed}" if (completed + failed) > 0 else "0/0")
+        table.add_row("Files Failed", str(failed))
+        table.add_row("Current File", self.session_stats.current_file or "None")
+        table.add_row("Elapsed Time", str(elapsed).split('.')[0])
+        if estimated_remaining:
+            table.add_row("Estimated Remaining", str(estimated_remaining).split('.')[0])
+        table.add_row("Original Size", f"{total_original:.1f} MB")
+        table.add_row("Encoded Size", f"{total_encoded:.1f} MB")
+        if compression_ratio > 0:
+            table.add_row("Compression Ratio", f"{compression_ratio:.1f}%")
+        
+        return table
+    
+    def start_file_processing(self, filename: str, file_index: int):
+        """Start processing a new file"""
+        self.session_stats.current_file = filename
+        
+        # Find the file stats
+        file_stat = next((fs for fs in self.file_stats if fs.filename == filename), None)
+        if file_stat:
+            file_stat.status = "processing"
+            file_stat.start_time = datetime.now()
+        
+        if self.use_rich and self.progress:
+            # Update current file task
+            if self.current_task_id:
+                self.progress.remove_task(self.current_task_id)
+            
+            self.current_task_id = self.progress.add_task(
+                f"Encoding: {filename}", total=100
+            )
+            
+            # Update overall progress description to show which file we're on
+            if self.overall_task_id:
+                completed = self.session_stats.completed_files + self.session_stats.failed_files
+                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files}) - Current: {filename}"
+                self.progress.update(
+                    self.overall_task_id,
+                    description=overall_description
+                )
+        else:
+            print(f"\n[{file_index}/{self.session_stats.total_files}] Processing: {filename}")
+    
+    def update_file_progress(self, progress_percent: float):
+        """Update current file progress"""
+        if self.use_rich and self.progress and self.current_task_id:
+            self.progress.update(self.current_task_id, completed=progress_percent)
+    
+    def complete_file_processing(self, filename: str, success: bool, 
+                               original_size_mb: float = 0, encoded_size_mb: float = 0,
+                               encoding_time: float = 0, error_message: Optional[str] = None):
+        """Complete file processing"""
+        # Update file stats
+        file_stat = next((fs for fs in self.file_stats if fs.filename == filename), None)
+        if file_stat:
+            file_stat.status = "completed" if success else "failed"
+            file_stat.end_time = datetime.now()
+            file_stat.original_size_mb = original_size_mb
+            file_stat.encoded_size_mb = encoded_size_mb
+            file_stat.encoding_time = encoding_time
+            file_stat.error_message = error_message
+            
+            if success and original_size_mb > 0:
+                file_stat.compression_ratio = (encoded_size_mb / original_size_mb) * 100
+        
+        # Update session stats
+        if success:
+            self.session_stats.completed_files += 1
+            self.session_stats.total_original_size_mb += original_size_mb
+            self.session_stats.total_encoded_size_mb += encoded_size_mb
+        else:
+            self.session_stats.failed_files += 1
+        
+        self.session_stats.total_encoding_time += encoding_time
+        
+        if self.use_rich and self.progress:
+            # Complete current file task
+            if self.current_task_id:
+                self.progress.update(self.current_task_id, completed=100)
+                self.progress.remove_task(self.current_task_id)
+                self.current_task_id = None
+            
+            # Update overall progress
+            if self.overall_task_id:
+                completed = self.session_stats.completed_files + self.session_stats.failed_files
+                # Update the description to show current progress
+                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files})"
+                self.progress.update(
+                    self.overall_task_id, 
+                    completed=completed,
+                    description=overall_description
+                )
+                # Force immediate refresh of the display
+                if self.live:
+                    self.live.refresh()
+        else:
+            status = "✓ SUCCESS" if success else "✗ FAILED"
+            print(f"  {status}: {filename}")
+            if error_message:
+                print(f"    Error: {error_message}")
+            if success:
+                compression = (encoded_size_mb / original_size_mb * 100) if original_size_mb > 0 else 0
+                print(f"    Size: {original_size_mb:.1f}MB → {encoded_size_mb:.1f}MB ({compression:.1f}%)")
+                print(f"    Time: {encoding_time:.1f}s")
+    
+    def show_final_summary(self):
+        """Show final session summary"""
+        if self.use_rich:
+            self._show_rich_summary()
+        else:
+            self._show_simple_summary()
+    
+    def _show_rich_summary(self):
+        """Show Rich-based final summary"""
+        summary_table = Table(title="Encoding Session Summary", show_header=True, header_style="bold cyan")
+        summary_table.add_column("Metric", style="white")
+        summary_table.add_column("Value", style="green")
+        
+        total_time = datetime.now() - self.session_stats.session_start
+        
+        summary_table.add_row("Total Files", str(self.session_stats.total_files))
+        summary_table.add_row("Successfully Encoded", str(self.session_stats.completed_files))
+        summary_table.add_row("Failed", str(self.session_stats.failed_files))
+        summary_table.add_row("Total Time", str(total_time).split('.')[0])
+        summary_table.add_row("Original Total Size", f"{self.session_stats.total_original_size_mb:.1f} MB")
+        summary_table.add_row("Encoded Total Size", f"{self.session_stats.total_encoded_size_mb:.1f} MB")
+        
+        if self.session_stats.total_original_size_mb > 0:
+            compression = (self.session_stats.total_encoded_size_mb / self.session_stats.total_original_size_mb) * 100
+            space_saved = self.session_stats.total_original_size_mb - self.session_stats.total_encoded_size_mb
+            summary_table.add_row("Overall Compression", f"{compression:.1f}%")
+            summary_table.add_row("Space Saved", f"{space_saved:.1f} MB")
+        
+        self.console.print("\n")
+        self.console.print(Panel(summary_table, box=box.ROUNDED))
+        
+        # Show failed files if any
+        if self.session_stats.failed_files > 0:
+            failed_files = [fs for fs in self.file_stats if fs.status == "failed"]
+            if failed_files:
+                self.console.print("\n[bold red]Failed Files:[/bold red]")
+                for fs in failed_files:
+                    self.console.print(f"  • {fs.filename}: {fs.error_message or 'Unknown error'}")
+    
+    def _show_simple_summary(self):
+        """Show simple text-based final summary"""
+        print("\n" + "="*60)
+        print("ENCODING SESSION SUMMARY")
+        print("="*60)
+        
+        total_time = datetime.now() - self.session_stats.session_start
+        
+        print(f"Total Files: {self.session_stats.total_files}")
+        print(f"Successfully Encoded: {self.session_stats.completed_files}")
+        print(f"Failed: {self.session_stats.failed_files}")
+        print(f"Total Time: {total_time}")
+        print(f"Original Total Size: {self.session_stats.total_original_size_mb:.1f} MB")
+        print(f"Encoded Total Size: {self.session_stats.total_encoded_size_mb:.1f} MB")
+        
+        if self.session_stats.total_original_size_mb > 0:
+            compression = (self.session_stats.total_encoded_size_mb / self.session_stats.total_original_size_mb) * 100
+            space_saved = self.session_stats.total_original_size_mb - self.session_stats.total_encoded_size_mb
+            print(f"Overall Compression: {compression:.1f}%")
+            print(f"Space Saved: {space_saved:.1f} MB")
+        
+        # Show failed files if any
+        if self.session_stats.failed_files > 0:
+            print(f"\nFailed Files:")
+            failed_files = [fs for fs in self.file_stats if fs.status == "failed"]
+            for fs in failed_files:
+                print(f"  - {fs.filename}: {fs.error_message or 'Unknown error'}")
+
+
+def main():
+    """Test progress display functionality"""
+    import random
+    
+    display = ProgressDisplay()
+    
+    # Simulate file list
+    file_list = [f"video_{i:03d}.mp4" for i in range(1, 6)]
+    display.initialize_session(len(file_list), file_list)
+    
+    with display.live_display():
+        for i, filename in enumerate(file_list, 1):
+            display.start_file_processing(filename, i)
+            
+            # Simulate encoding progress
+            for progress in range(0, 101, 10):
+                display.update_file_progress(progress)
+                time.sleep(0.2)
+            
+            # Simulate completion
+            success = random.choice([True, True, True, False])  # 75% success rate
+            if success:
+                display.complete_file_processing(
+                    filename, True, 
+                    original_size_mb=random.uniform(50, 200),
+                    encoded_size_mb=random.uniform(30, 150),
+                    encoding_time=random.uniform(10, 60)
+                )
+            else:
+                display.complete_file_processing(
+                    filename, False,
+                    error_message="Simulated encoding error"
+                )
+    
+    display.show_final_summary()
+
+
+if __name__ == "__main__":
+    main()
