@@ -82,11 +82,15 @@ class ProgressDisplay:
         self.session_stats.total_files = total_files
         self.session_stats.session_start = datetime.now()
         
-        # Initialize file stats
-        self.file_stats = [
-            FileProcessingStats(filename=filename)
-            for filename in file_list
-        ]
+        # Initialize file stats with safe filename handling
+        self.file_stats = []
+        for filename in file_list:
+            try:
+                safe_filename = str(filename).encode('utf-8', errors='replace').decode('utf-8')
+            except:
+                safe_filename = f"File_{len(self.file_stats)+1}"
+            
+            self.file_stats.append(FileProcessingStats(filename=safe_filename))
         
         if self.use_rich:
             self._setup_rich_display()
@@ -152,7 +156,11 @@ class ProgressDisplay:
         """Stop the display update thread"""
         if self._update_thread:
             self._stop_event.set()
-            self._update_thread.join(timeout=1.0)
+            # Give thread more time to finish gracefully
+            self._update_thread.join(timeout=5.0)
+            if self._update_thread.is_alive():
+                print("Warning: Display update thread did not terminate cleanly")
+            self._update_thread = None
     
     def _update_display_loop(self):
         """Main display update loop"""
@@ -201,7 +209,7 @@ class ProgressDisplay:
         
         # Add rows
         table.add_row("Progress", f"{completed}/{total} files completed")
-        table.add_row("Success Rate", f"{completed - failed}/{completed + failed}" if (completed + failed) > 0 else "0/0")
+        table.add_row("Success Rate", f"{completed}/{completed + failed}" if (completed + failed) > 0 else "0/0")
         table.add_row("Files Failed", str(failed))
         table.add_row("Current File", self.session_stats.current_file or "None")
         table.add_row("Elapsed Time", str(elapsed).split('.')[0])
@@ -216,7 +224,13 @@ class ProgressDisplay:
     
     def start_file_processing(self, filename: str, file_index: int):
         """Start processing a new file"""
-        self.session_stats.current_file = filename
+        # Safely handle filename encoding
+        try:
+            safe_filename = str(filename).encode('utf-8', errors='replace').decode('utf-8')
+        except:
+            safe_filename = f"File_{file_index}"
+        
+        self.session_stats.current_file = safe_filename
         
         # Find the file stats
         file_stat = next((fs for fs in self.file_stats if fs.filename == filename), None)
@@ -230,29 +244,50 @@ class ProgressDisplay:
                 self.progress.remove_task(self.current_task_id)
             
             self.current_task_id = self.progress.add_task(
-                f"Encoding: {filename}", total=100
+                f"Encoding: {safe_filename}", total=100
             )
             
             # Update overall progress description to show which file we're on
             if self.overall_task_id:
                 completed = self.session_stats.completed_files + self.session_stats.failed_files
-                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files}) - Current: {filename}"
+                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files}) - Current: {safe_filename}"
                 self.progress.update(
                     self.overall_task_id,
+                    completed=completed,
                     description=overall_description
                 )
         else:
-            print(f"\n[{file_index}/{self.session_stats.total_files}] Processing: {filename}")
+            print(f"\n[{file_index}/{self.session_stats.total_files}] Processing: {safe_filename}")
     
     def update_file_progress(self, progress_percent: float):
         """Update current file progress"""
-        if self.use_rich and self.progress and self.current_task_id:
-            self.progress.update(self.current_task_id, completed=progress_percent)
+        try:
+            if self.use_rich and self.progress and self.current_task_id:
+                # Clamp progress to valid range
+                progress_percent = max(0.0, min(100.0, progress_percent))
+                self.progress.update(self.current_task_id, completed=progress_percent)
+        except Exception:
+            # Silently ignore progress update errors to prevent breaking encoding
+            pass
     
     def complete_file_processing(self, filename: str, success: bool, 
                                original_size_mb: float = 0, encoded_size_mb: float = 0,
                                encoding_time: float = 0, error_message: Optional[str] = None):
         """Complete file processing"""
+        # Safely handle filename and error message encoding
+        try:
+            safe_filename = str(filename).encode('utf-8', errors='replace').decode('utf-8')
+        except:
+            safe_filename = "[Filename with encoding issues]"
+        
+        if error_message:
+            try:
+                safe_error_message = str(error_message).encode('utf-8', errors='replace').decode('utf-8')
+            except:
+                safe_error_message = "Error message with encoding issues"
+        else:
+            safe_error_message = None
+        
         # Update file stats
         file_stat = next((fs for fs in self.file_stats if fs.filename == filename), None)
         if file_stat:
@@ -261,7 +296,7 @@ class ProgressDisplay:
             file_stat.original_size_mb = original_size_mb
             file_stat.encoded_size_mb = encoded_size_mb
             file_stat.encoding_time = encoding_time
-            file_stat.error_message = error_message
+            file_stat.error_message = safe_error_message
             
             if success and original_size_mb > 0:
                 file_stat.compression_ratio = (encoded_size_mb / original_size_mb) * 100
@@ -298,9 +333,9 @@ class ProgressDisplay:
                     self.live.refresh()
         else:
             status = "✓ SUCCESS" if success else "✗ FAILED"
-            print(f"  {status}: {filename}")
-            if error_message:
-                print(f"    Error: {error_message}")
+            print(f"  {status}: {safe_filename}")
+            if safe_error_message:
+                print(f"    Error: {safe_error_message}")
             if success:
                 compression = (encoded_size_mb / original_size_mb * 100) if original_size_mb > 0 else 0
                 print(f"    Size: {original_size_mb:.1f}MB → {encoded_size_mb:.1f}MB ({compression:.1f}%)")

@@ -305,22 +305,41 @@ class VideoEncoderApp:
             
             # Process files
             print("\nStarting encoding process...")
-            results = self.encoder.encode_batch(video_files, options['delete_originals'])
+            try:
+                results = self.encoder.encode_batch(video_files, options['delete_originals'])
+            except KeyboardInterrupt:
+                print("\nEncoding interrupted by user")
+                return
             
             # Clean up failed files
             if results['failed_files'] > 0:
-                cleanup = input(f"\nClean up {results['failed_files']} failed output files? (y/n, default: y): ").strip().lower()
-                if cleanup != 'n':
-                    self.encoder.cleanup_failed_files()
+                try:
+                    cleanup = input(f"\nClean up {results['failed_files']} failed output files? (y/n, default: y): ").strip().lower()
+                    if cleanup != 'n':
+                        self.encoder.cleanup_failed_files()
+                except KeyboardInterrupt:
+                    print("\nCleanup cancelled by user")
             
             print("\nEncoding process completed!")
             
         except KeyboardInterrupt:
             print("\nProcess interrupted by user")
+            # Attempt graceful cleanup
+            try:
+                print("Cleaning up partial files...")
+                self.encoder.cleanup_failed_files()
+            except:
+                pass
         except Exception as e:
             print(f"\nAn error occurred: {e}")
             import traceback
             traceback.print_exc()
+            # Attempt cleanup on error
+            try:
+                print("Attempting to clean up partial files...")
+                self.encoder.cleanup_failed_files()
+            except:
+                pass
     
     def _show_configuration_summary(self):
         """Display configuration summary"""
