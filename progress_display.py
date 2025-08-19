@@ -76,6 +76,7 @@ class ProgressDisplay:
         # Threading
         self._stop_event = threading.Event()
         self._update_thread: Optional[threading.Thread] = None
+        self._overall_task_created = False
         
     def initialize_session(self, total_files: int, file_list: List[str]):
         """Initialize the progress session"""
@@ -209,7 +210,7 @@ class ProgressDisplay:
         
         # Add rows
         table.add_row("Progress", f"{completed}/{total} files completed")
-        table.add_row("Success Rate", f"{completed}/{completed + failed}" if (completed + failed) > 0 else "0/0")
+        table.add_row("Success Rate", f"{completed}/{completed + failed} - {completed / (completed + failed) * 100:.1f}%" if (completed + failed) > 0 else "0/0 - 0.0%")
         table.add_row("Files Failed", str(failed))
         table.add_row("Current File", self.session_stats.current_file or "None")
         table.add_row("Elapsed Time", str(elapsed).split('.')[0])
@@ -248,12 +249,10 @@ class ProgressDisplay:
             )
             
             # Update overall progress description to show which file we're on
-            if self.overall_task_id:
-                completed = self.session_stats.completed_files + self.session_stats.failed_files
-                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files}) - Current: {safe_filename}"
+            if self.overall_task_id is not None:
+                overall_description = f"Overall Progress"
                 self.progress.update(
                     self.overall_task_id,
-                    completed=completed,
                     description=overall_description
                 )
         else:
@@ -319,16 +318,25 @@ class ProgressDisplay:
                 self.current_task_id = None
             
             # Update overall progress
-            if self.overall_task_id:
+            if self.overall_task_id is not None: # overall_task_id is '0' but python considers it as False, so use is not None
                 completed = self.session_stats.completed_files + self.session_stats.failed_files
-                # Update the description to show current progress
-                overall_description = f"Overall Progress ({completed}/{self.session_stats.total_files})"
+                
+                # Update the description to show current progress manually
+                overall_description = f"Overall Progress"
+                
+                # Ensure values are integers
+                completed = int(completed)
+                total = int(self.session_stats.total_files)
+                
                 self.progress.update(
-                    self.overall_task_id, 
+                    self.overall_task_id,
                     completed=completed,
+                    total=total,
                     description=overall_description
                 )
-                # Force immediate refresh of the display
+                
+                # Additional force refresh
+                self.progress.refresh()
                 if self.live:
                     self.live.refresh()
         else:
