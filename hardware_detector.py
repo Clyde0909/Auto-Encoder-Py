@@ -73,12 +73,13 @@ class HardwareDetector:
         """Fallback GPU detection using system commands"""
         try:
             if self.system == "Windows":
-                result = subprocess.run(
-                    ["wmic", "path", "win32_VideoController", "get", "name"],
-                    capture_output=True, text=True, check=True
-                )
+                # Use PowerShell instead of wmic for better compatibility
+                result = subprocess.run([
+                    "powershell", "-Command", 
+                    "Get-CimInstance -ClassName Win32_VideoController | Select-Object -ExpandProperty Name"
+                ], capture_output=True, text=True, check=True)
                 gpu_names = [line.strip() for line in result.stdout.split('\n') 
-                           if line.strip() and 'Name' not in line]
+                           if line.strip()]
             else:
                 result = subprocess.run(
                     ["lspci", "-nn", "|", "grep", "VGA"],
@@ -109,12 +110,13 @@ class HardwareDetector:
         """Detect CPU information"""
         try:
             if self.system == "Windows":
-                result = subprocess.run(
-                    ["wmic", "cpu", "get", "name"],
-                    capture_output=True, text=True, check=True
-                )
-                cpu_name = [line.strip() for line in result.stdout.split('\n') 
-                          if line.strip() and 'Name' not in line][0]
+                # Use PowerShell instead of wmic for better compatibility
+                result = subprocess.run([
+                    "powershell", "-Command", 
+                    "Get-CimInstance -ClassName Win32_Processor | Select-Object -ExpandProperty Name"
+                ], capture_output=True, text=True, check=True)
+                cpu_lines = [line.strip() for line in result.stdout.split('\n') if line.strip()]
+                cpu_name = cpu_lines[0] if cpu_lines else "Unknown CPU"
             else:
                 with open('/proc/cpuinfo', 'r') as f:
                     for line in f:
@@ -128,7 +130,40 @@ class HardwareDetector:
             }
         except Exception as e:
             print(f"CPU detection failed: {e}")
-            self.cpu_info = {'name': 'Unknown', 'supports_qsv': False}
+            self._simple_cpu_fallback()
+    
+    def _simple_fallback_detection(self):
+        """Simple fallback detection when all other methods fail"""
+        print("Using simple fallback detection...")
+        
+        # Add a generic GPU entry
+        gpu_info = GPUInfo(
+            name="Unknown Graphics Device",
+            vendor="Unknown",
+            memory=None,
+            supports_nvenc=False,
+            supports_vce=False,
+            supports_qsv=False
+        )
+        self.gpus.append(gpu_info)
+    
+    def _simple_cpu_fallback(self):
+        """Simple CPU fallback when detection fails"""
+        print("Using simple CPU fallback...")
+        
+        # Try to get basic system info using platform module
+        try:
+            import platform
+            processor = platform.processor()
+            if not processor:
+                processor = f"{platform.machine()} processor"
+            
+            self.cpu_info = {
+                'name': processor or 'Unknown CPU',
+                'supports_qsv': False
+            }
+        except Exception:
+            self.cpu_info = {'name': 'Unknown CPU', 'supports_qsv': False}
     
     def _determine_vendor(self, gpu_name: str) -> str:
         """Determine GPU vendor from name"""
