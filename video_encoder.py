@@ -5,7 +5,9 @@ Handles the complete encoding pipeline with hardware detection, resolution scali
 
 import os
 import re
+import sys
 import time
+import threading
 import subprocess
 from typing import List, Dict, Optional, Callable
 from pathlib import Path
@@ -175,6 +177,11 @@ class VideoEncoder:
         self.progress_display = ProgressDisplay()
         self.progress_callback = progress_callback
         
+        # Graceful cancellation support
+        self._cancel_event = threading.Event()
+        self._cancel_listener_thread: Optional[threading.Thread] = None
+        self._cancel_listener_stop = threading.Event()
+        
         # Session tracking
         self.video_files: List[VideoFile] = []
         self.processing_stats = {
@@ -188,6 +195,52 @@ class VideoEncoder:
         
         # Apply recommended hardware settings
         self._apply_hardware_recommendations()
+    
+    def _start_cancel_listener(self):
+        """Start a background thread that listens for 'q' key to schedule cancellation"""
+        self._cancel_event.clear()
+        self._cancel_listener_stop.clear()
+        
+        def _listen_for_cancel():
+            try:
+                if sys.platform == 'win32':
+                    import msvcrt
+                    while not self._cancel_listener_stop.is_set():
+                        if msvcrt.kbhit():
+                            key = msvcrt.getch()
+                            if key in (b'q', b'Q'):
+                                self._cancel_event.set()
+                                self.progress_display.set_cancel_scheduled(True)
+                                break
+                        self._cancel_listener_stop.wait(timeout=0.1)
+                else:
+                    import select
+                    import tty
+                    import termios
+                    old_settings = termios.tcgetattr(sys.stdin)
+                    try:
+                        tty.setcbreak(sys.stdin.fileno())
+                        while not self._cancel_listener_stop.is_set():
+                            if select.select([sys.stdin], [], [], 0.1)[0]:
+                                key = sys.stdin.read(1)
+                                if key in ('q', 'Q'):
+                                    self._cancel_event.set()
+                                    self.progress_display.set_cancel_scheduled(True)
+                                    break
+                    finally:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass  # Silently ignore listener errors
+        
+        self._cancel_listener_thread = threading.Thread(target=_listen_for_cancel, daemon=True)
+        self._cancel_listener_thread.start()
+    
+    def _stop_cancel_listener(self):
+        """Stop the cancel listener thread"""
+        self._cancel_listener_stop.set()
+        if self._cancel_listener_thread and self._cancel_listener_thread.is_alive():
+            self._cancel_listener_thread.join(timeout=2.0)
+        self._cancel_listener_thread = None
     
     def _apply_hardware_recommendations(self):
         """Apply recommended hardware acceleration settings"""
@@ -330,6 +383,8 @@ class VideoEncoder:
                     self._encode_with_progress(output_stream, video_file, output_path)
                 else:
                     # Standard execution with timeout
+                    # Add -nostdin to prevent FFmpeg from reading keyboard input
+                    output_stream = output_stream.global_args('-nostdin')
                     try:
                         output_stream.run(
                             overwrite_output=True, 
@@ -450,8 +505,13 @@ class VideoEncoder:
         
         # Process files with live display
         try:
+            self._start_cancel_listener()
             with self.progress_display.live_display():
                 for i, video_file in enumerate(video_files, 1):
+                    # Check for scheduled cancellation before starting next file
+                    if self._cancel_event.is_set():
+                        break
+                    
                     try:
                         # Start processing display
                         self.progress_display.start_file_processing(video_file.filename, i)
@@ -521,8 +581,13 @@ class VideoEncoder:
             print(f"\nBatch encoding error: {e}")
             raise
         finally:
+            # Stop cancel listener
+            self._stop_cancel_listener()
+            
             # Ensure display is properly closed
             try:
+                if self._cancel_event.is_set():
+                    self.processing_stats['cancelled'] = True
                 self.progress_display.show_final_summary()
             except Exception as e:
                 print(f"Warning: Could not show final summary: {e}")
@@ -604,8 +669,9 @@ class VideoEncoder:
         # Remove any existing progress or stats arguments
         cmd = [arg for arg in cmd if arg not in ['-progress', 'pipe:1', '-nostats', '-stats', '-v', 'info']]
         
-        # Add progress monitoring to stderr (default FFmpeg behavior)
-        cmd.extend(['-stats', '-loglevel', 'info'])
+        # Add -nostdin to prevent FFmpeg from reading keyboard input,
+        # and progress monitoring to stderr (default FFmpeg behavior)
+        cmd.extend(['-nostdin', '-stats', '-loglevel', 'info'])
         
         # Thread-safe progress communication
         progress_queue = queue.Queue()
@@ -621,6 +687,7 @@ class VideoEncoder:
             
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,  # Prevent FFmpeg from reading keyboard input
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,

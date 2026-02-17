@@ -70,15 +70,30 @@ class VideoEncoderApp:
         while True:
             target_dir = input("Enter target directory path: ").strip()
             if not target_dir:
-                print("Please enter a valid directory path")
+                print("Error: Please enter a valid directory path.")
+                continue
+            
+            # Strip surrounding quotes (users may paste paths with quotes)
+            target_dir = target_dir.strip('"').strip("'")
+            
+            # Normalize and resolve path
+            try:
+                target_dir = os.path.normpath(os.path.abspath(target_dir))
+            except (ValueError, OSError) as e:
+                print(f"Error: Invalid path format: {e}")
                 continue
             
             if not os.path.exists(target_dir):
-                print(f"Directory does not exist: {target_dir}")
+                print(f"Error: Directory does not exist: {target_dir}")
                 continue
             
             if not os.path.isdir(target_dir):
-                print(f"Path is not a directory: {target_dir}")
+                print(f"Error: Path is not a directory: {target_dir}")
+                continue
+            
+            # Check read permission
+            if not os.access(target_dir, os.R_OK):
+                print(f"Error: No read permission for directory: {target_dir}")
                 continue
             
             return target_dir
@@ -240,21 +255,46 @@ class VideoEncoderApp:
             except ValueError:
                 print("Please enter a valid number")
     
+    @staticmethod
+    def _ask_yes_no(prompt: str, default: Optional[str] = None) -> bool:
+        """Ask a yes/no question with input validation.
+        
+        Args:
+            prompt: The question to display.
+            default: Default value ('y' or 'n'). If None, no default is applied.
+        
+        Returns:
+            True for yes, False for no.
+        """
+        while True:
+            answer = input(prompt).strip().lower()
+            if not answer and default is not None:
+                return default == 'y'
+            if answer in ('y', 'yes'):
+                return True
+            elif answer in ('n', 'no'):
+                return False
+            else:
+                print("Invalid input. Please enter 'y' or 'n'.")
+    
     def get_processing_options(self) -> dict:
         """Get additional processing options"""
         print("\nProcessing Options:")
         
         # Recursive directory search
-        recursive = input("Search subdirectories recursively? (y/n, default: y): ").strip().lower()
-        recursive = recursive != 'n'
+        recursive = self._ask_yes_no(
+            "Search subdirectories recursively? (y/n, default: y): ", default='y'
+        )
         
         # Delete original files
-        delete_originals = input("Delete original files after successful encoding? (y/n, default: n): ").strip().lower()
-        delete_originals = delete_originals == 'y'
+        delete_originals = self._ask_yes_no(
+            "Delete original files after successful encoding? (y/n, default: n): ", default='n'
+        )
         
         if delete_originals:
-            confirm = input("Are you sure you want to delete original files? This cannot be undone! (yes/no): ").strip().lower()
-            delete_originals = confirm == 'yes'
+            delete_originals = self._ask_yes_no(
+                "Are you sure you want to delete original files? This cannot be undone! (y/n): "
+            )
         
         return {
             'recursive': recursive,
@@ -314,8 +354,10 @@ class VideoEncoderApp:
             # Clean up failed files
             if results['failed_files'] > 0:
                 try:
-                    cleanup = input(f"\nClean up {results['failed_files']} failed output files? (y/n, default: y): ").strip().lower()
-                    if cleanup != 'n':
+                    if self._ask_yes_no(
+                        f"\nClean up {results['failed_files']} failed output files? (y/n, default: y): ",
+                        default='y'
+                    ):
                         self.encoder.cleanup_failed_files()
                 except KeyboardInterrupt:
                     print("\nCleanup cancelled by user")

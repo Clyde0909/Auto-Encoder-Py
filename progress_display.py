@@ -21,6 +21,7 @@ try:
     from rich.layout import Layout
     from rich.live import Live
     from rich.text import Text
+    from rich.columns import Columns
     from rich import box
     RICH_AVAILABLE = True
 except ImportError:
@@ -78,6 +79,13 @@ class ProgressDisplay:
         self._update_thread: Optional[threading.Thread] = None
         self._overall_task_created = False
         
+        # Cancellation
+        self._cancel_scheduled = False
+        
+    def set_cancel_scheduled(self, value: bool):
+        """Set cancel scheduled state"""
+        self._cancel_scheduled = value
+    
     def initialize_session(self, total_files: int, file_list: List[str]):
         """Initialize the progress session"""
         self.session_stats.total_files = total_files
@@ -119,7 +127,7 @@ class ProgressDisplay:
         self.layout.split(
             Layout(name="header", size=3),
             Layout(name="main", ratio=1),
-            Layout(name="footer", size=8)
+            Layout(name="footer", size=10)
         )
         
         # Add overall progress task
@@ -130,6 +138,7 @@ class ProgressDisplay:
     def _setup_simple_display(self):
         """Setup simple text-based display"""
         print(f"Starting encoding session: {self.session_stats.total_files} files")
+        print("Press 'q' to cancel after the current file finishes.")
         print("-" * 50)
     
     @contextmanager
@@ -173,22 +182,34 @@ class ProgressDisplay:
     def _update_rich_layout(self):
         """Update the Rich layout"""
         # Header
-        header_text = Text(
-            f"Video Encoder - Session started at {self.session_stats.session_start.strftime('%H:%M:%S')}",
-            style="bold magenta"
-        )
+        if self._cancel_scheduled:
+            header_text = Text(
+                "⚠ Cancellation scheduled - finishing current file...",
+                style="bold yellow"
+            )
+        else:
+            header_text = Text(
+                f"Video Encoder - Session started at {self.session_stats.session_start.strftime('%H:%M:%S')}  |  Press 'q' to cancel after current file",
+                style="bold magenta"
+            )
         self.layout["header"].update(Panel(header_text, box=box.ROUNDED))
         
         # Main progress area
         self.layout["main"].update(Panel(self.progress, title="Progress", box=box.ROUNDED))
         
         # Footer with statistics
-        stats_table = self._create_stats_table()
-        self.layout["footer"].update(Panel(stats_table, title="Statistics", box=box.ROUNDED))
+        stats_columns = self._create_stats_columns()
+        self.layout["footer"].update(Panel(stats_columns, title="Statistics", box=box.ROUNDED))
     
-    def _create_stats_table(self) -> Table:
-        """Create statistics table"""
-        table = Table(show_header=True, header_style="bold cyan")
+    def _create_stats_columns(self):
+        """Create side-by-side statistics columns"""
+        left_table = self._create_session_stats_table()
+        right_table = self._create_size_stats_table()
+        return Columns([left_table, right_table], expand=True, equal=True)
+    
+    def _create_session_stats_table(self) -> Table:
+        """Create session statistics table (left side)"""
+        table = Table(show_header=True, header_style="bold cyan", expand=True, title="Session")
         table.add_column("Metric", style="white")
         table.add_column("Value", style="green")
         
@@ -206,20 +227,39 @@ class ProgressDisplay:
         # Size calculations
         total_original = self.session_stats.total_original_size_mb
         total_encoded = self.session_stats.total_encoded_size_mb
-        compression_ratio = (total_encoded / total_original * 100) if total_original > 0 else 0
         
         # Add rows
         table.add_row("Progress", f"{completed}/{total} files completed")
         table.add_row("Success Rate", f"{completed}/{completed + failed} - {completed / (completed + failed) * 100:.1f}%" if (completed + failed) > 0 else "0/0 - 0.0%")
         table.add_row("Files Failed", str(failed))
         table.add_row("Current File", self.session_stats.current_file or "None")
+        if self._cancel_scheduled:
+            table.add_row("Status", "[bold yellow]Cancellation scheduled[/bold yellow]")
         table.add_row("Elapsed Time", str(elapsed).split('.')[0])
         if estimated_remaining:
-            table.add_row("Estimated Remaining", str(estimated_remaining).split('.')[0])
-        table.add_row("Original Size", f"{total_original:.1f} MB")
-        table.add_row("Encoded Size", f"{total_encoded:.1f} MB")
-        if compression_ratio > 0:
-            table.add_row("Compression Ratio", f"{compression_ratio:.1f}%")
+            table.add_row("Est. Remaining", str(estimated_remaining).split('.')[0])
+        
+        return table
+    
+    def _create_size_stats_table(self) -> Table:
+        """Create size/compression statistics table (right side)"""
+        table = Table(show_header=True, header_style="bold cyan", expand=True, title="Size")
+        table.add_column("Metric", style="white")
+        table.add_column("Value", style="green")
+        
+        total_original = self.session_stats.total_original_size_mb
+        total_encoded = self.session_stats.total_encoded_size_mb
+        compression_ratio = (total_encoded / total_original * 100) if total_original > 0 else 0
+        reduction = 100 - compression_ratio if total_original > 0 else 0
+        saved_mb = total_original - total_encoded if total_original > 0 else 0
+        
+        table.add_row("Total Original", f"{total_original:.1f} MB")
+        table.add_row("Total Encoded", f"{total_encoded:.1f} MB")
+        if total_original > 0:
+            reduction_style = "green" if reduction > 0 else "red"
+            table.add_row("Reduction", f"[{reduction_style}]{reduction:.1f}% ({saved_mb:.1f} MB saved)[/{reduction_style}]")
+        else:
+            table.add_row("Reduction", "-")
         
         return table
     
@@ -358,7 +398,10 @@ class ProgressDisplay:
     
     def _show_rich_summary(self):
         """Show Rich-based final summary"""
-        summary_table = Table(title="Encoding Session Summary", show_header=True, header_style="bold cyan")
+        title = "Encoding Session Summary"
+        if self._cancel_scheduled:
+            title += " (Cancelled by user)"
+        summary_table = Table(title=title, show_header=True, header_style="bold cyan")
         summary_table.add_column("Metric", style="white")
         summary_table.add_column("Value", style="green")
         
@@ -367,6 +410,9 @@ class ProgressDisplay:
         summary_table.add_row("Total Files", str(self.session_stats.total_files))
         summary_table.add_row("Successfully Encoded", str(self.session_stats.completed_files))
         summary_table.add_row("Failed", str(self.session_stats.failed_files))
+        if self._cancel_scheduled:
+            skipped = self.session_stats.total_files - self.session_stats.completed_files - self.session_stats.failed_files
+            summary_table.add_row("Skipped (Cancelled)", f"[yellow]{skipped}[/yellow]")
         summary_table.add_row("Total Time", str(total_time).split('.')[0])
         summary_table.add_row("Original Total Size", f"{self.session_stats.total_original_size_mb:.1f} MB")
         summary_table.add_row("Encoded Total Size", f"{self.session_stats.total_encoded_size_mb:.1f} MB")
@@ -391,7 +437,10 @@ class ProgressDisplay:
     def _show_simple_summary(self):
         """Show simple text-based final summary"""
         print("\n" + "="*60)
-        print("ENCODING SESSION SUMMARY")
+        if self._cancel_scheduled:
+            print("ENCODING SESSION SUMMARY (Cancelled by user)")
+        else:
+            print("ENCODING SESSION SUMMARY")
         print("="*60)
         
         total_time = datetime.now() - self.session_stats.session_start
@@ -399,6 +448,9 @@ class ProgressDisplay:
         print(f"Total Files: {self.session_stats.total_files}")
         print(f"Successfully Encoded: {self.session_stats.completed_files}")
         print(f"Failed: {self.session_stats.failed_files}")
+        if self._cancel_scheduled:
+            skipped = self.session_stats.total_files - self.session_stats.completed_files - self.session_stats.failed_files
+            print(f"Skipped (Cancelled): {skipped}")
         print(f"Total Time: {total_time}")
         print(f"Original Total Size: {self.session_stats.total_original_size_mb:.1f} MB")
         print(f"Encoded Total Size: {self.session_stats.total_encoded_size_mb:.1f} MB")
