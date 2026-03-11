@@ -143,8 +143,8 @@ class EncodingConfigManager:
                              original_bitrate: Optional[str] = None,
                              scale_filter: Optional[str] = None) -> Dict[str, Any]:
         """Generate FFmpeg parameters based on current configuration"""
-        # Base input configuration
-        input_config = ffmpeg.input(input_file)
+        # Base input configuration with increased thread queue size for slow storage (HDD)
+        input_config = ffmpeg.input(input_file, thread_queue_size=1024)
         
         # Hardware acceleration
         global_args = []
