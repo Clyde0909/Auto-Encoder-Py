@@ -25,6 +25,9 @@ class GPUInfo:
     supports_nvenc: bool = False
     supports_vce: bool = False
     supports_qsv: bool = False
+    supports_av1_nvenc: bool = False
+    supports_av1_amf: bool = False
+    supports_av1_qsv: bool = False
 
 
 class HardwareDetector:
@@ -209,10 +212,13 @@ class HardwareDetector:
             for gpu in self.gpus:
                 if gpu.vendor == 'NVIDIA':
                     gpu.supports_nvenc = 'h264_nvenc' in encoders or 'hevc_nvenc' in encoders
+                    gpu.supports_av1_nvenc = 'av1_nvenc' in encoders
                 elif gpu.vendor == 'AMD':
                     gpu.supports_vce = 'h264_amf' in encoders or 'hevc_amf' in encoders
+                    gpu.supports_av1_amf = 'av1_amf' in encoders
                 elif gpu.vendor == 'Intel':
                     gpu.supports_qsv = 'h264_qsv' in encoders or 'hevc_qsv' in encoders
+                    gpu.supports_av1_qsv = 'av1_qsv' in encoders
                     
         except Exception as e:
             print(f"Failed to check FFmpeg encoders: {e}")
@@ -222,30 +228,56 @@ class HardwareDetector:
         recommendations = {
             'hw_accel': None,
             'video_codec': 'libx265',  # Default software encoder
-            'description': 'Software encoding (CPU only)'
+            'description': 'Software encoding (CPU only)',
+            'av1_hw_supported': False,
         }
         
-        # Prioritize NVIDIA > AMD > Intel for hardware acceleration
+        # Prioritize AV1 HW encoders first, then fall back to HEVC HW encoders
+        # NVIDIA AV1 > AMD AV1 > Intel AV1 > NVIDIA HEVC > AMD HEVC > Intel HEVC
         for gpu in self.gpus:
-            if gpu.vendor == 'NVIDIA' and gpu.supports_nvenc:
+            if gpu.vendor == 'NVIDIA' and gpu.supports_av1_nvenc:
+                recommendations.update({
+                    'hw_accel': 'cuda',
+                    'video_codec': 'av1_nvenc',
+                    'description': f'NVIDIA NVENC AV1 on {gpu.name}',
+                    'av1_hw_supported': True,
+                })
+                break
+            elif gpu.vendor == 'AMD' and gpu.supports_av1_amf:
+                recommendations.update({
+                    'hw_accel': 'auto',
+                    'video_codec': 'av1_amf',
+                    'description': f'AMD AMF AV1 on {gpu.name}',
+                    'av1_hw_supported': True,
+                })
+                break
+            elif gpu.vendor == 'Intel' and gpu.supports_av1_qsv:
+                recommendations.update({
+                    'hw_accel': 'qsv',
+                    'video_codec': 'av1_qsv',
+                    'description': f'Intel QuickSync AV1 on {gpu.name}',
+                    'av1_hw_supported': True,
+                })
+                break
+            elif gpu.vendor == 'NVIDIA' and gpu.supports_nvenc:
                 recommendations.update({
                     'hw_accel': 'cuda',
                     'video_codec': 'hevc_nvenc',
-                    'description': f'NVIDIA NVENC on {gpu.name}'
+                    'description': f'NVIDIA NVENC on {gpu.name}',
                 })
                 break
             elif gpu.vendor == 'AMD' and gpu.supports_vce:
                 recommendations.update({
                     'hw_accel': 'auto',
                     'video_codec': 'hevc_amf',
-                    'description': f'AMD VCE on {gpu.name}'
+                    'description': f'AMD VCE on {gpu.name}',
                 })
                 break
             elif gpu.vendor == 'Intel' and gpu.supports_qsv:
                 recommendations.update({
                     'hw_accel': 'qsv',
                     'video_codec': 'hevc_qsv',
-                    'description': f'Intel QuickSync on {gpu.name}'
+                    'description': f'Intel QuickSync on {gpu.name}',
                 })
         
         return recommendations
@@ -262,7 +294,10 @@ class HardwareDetector:
                     'memory': gpu.memory,
                     'nvenc': gpu.supports_nvenc,
                     'vce': gpu.supports_vce,
-                    'qsv': gpu.supports_qsv
+                    'qsv': gpu.supports_qsv,
+                    'av1_nvenc': gpu.supports_av1_nvenc,
+                    'av1_amf': gpu.supports_av1_amf,
+                    'av1_qsv': gpu.supports_av1_qsv,
                 }
                 for gpu in self.gpus
             ],
@@ -282,9 +317,11 @@ def main():
     for gpu in summary['gpus']:
         print(f"  - {gpu['name']} ({gpu['vendor']})")
         print(f"    NVENC: {gpu['nvenc']}, VCE: {gpu['vce']}, QSV: {gpu['qsv']}")
+        print(f"    AV1 NVENC: {gpu['av1_nvenc']}, AV1 AMF: {gpu['av1_amf']}, AV1 QSV: {gpu['av1_qsv']}")
     
     print(f"\nRecommended Encoder: {summary['recommended_encoder']['description']}")
     print(f"Codec: {summary['recommended_encoder']['video_codec']}")
+    print(f"AV1 HW Supported: {summary['recommended_encoder'].get('av1_hw_supported', False)}")
 
 
 if __name__ == "__main__":

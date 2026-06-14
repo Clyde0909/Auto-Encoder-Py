@@ -152,9 +152,10 @@ class VideoEncoderApp:
         print("\nSelect Video Codec:")
         print("   1. H.265/HEVC - Better compression, newer standard (default)")
         print("   2. H.264/AVC - Better compatibility, older standard")
+        print("   3. AV1 - Best compression, newest open standard")
         
         while True:
-            codec_choice = input("\nSelect codec (1-2, default: 1): ").strip()
+            codec_choice = input("\nSelect codec (1-3, default: 1): ").strip()
             if not codec_choice:
                 codec_choice = "1"
             
@@ -162,13 +163,20 @@ class VideoEncoderApp:
                 return VideoCodec.H265
             elif codec_choice == "2":
                 return VideoCodec.H264
+            elif codec_choice == "3":
+                return VideoCodec.AV1
             else:
-                print("Please enter 1 or 2")
+                print("Please enter 1, 2, or 3")
     
     def _configure_crf_encoding(self) -> tuple:
         """Configure CRF encoding parameters"""
-        print("\nCRF Quality Presets:")
-        presets = EncodingConfigManager.CRF_PRESETS
+        # Use AV1 presets if AV1 codec is selected
+        is_av1 = self.encoder.encoding_config.config.codec_type == VideoCodec.AV1
+        presets = EncodingConfigManager.AV1_CRF_PRESETS if is_av1 else EncodingConfigManager.CRF_PRESETS
+        crf_max = 63 if is_av1 else 51
+        codec_label = "AV1" if is_av1 else "H.264/H.265"
+        
+        print(f"\nCRF Quality Presets ({codec_label}):")
         
         options = []
         for i, (name, value) in enumerate(presets.items(), 1):
@@ -182,7 +190,7 @@ class VideoEncoderApp:
             print(f"   {i}. {description} - CRF {value}")
             options.append((name, value))
         
-        print(f"   {len(options)+1}. Custom CRF value (0-51)")
+        print(f"   {len(options)+1}. Custom CRF value (0-{crf_max})")
         
         while True:
             try:
@@ -198,11 +206,11 @@ class VideoEncoderApp:
                     # Custom CRF value
                     while True:
                         try:
-                            custom_crf = float(input("Enter custom CRF value (0-51, lower=higher quality): "))
-                            if 0 <= custom_crf <= 51:
+                            custom_crf = float(input(f"Enter custom CRF value (0-{crf_max}, lower=higher quality): "))
+                            if 0 <= custom_crf <= crf_max:
                                 return (EncodingMethod.CRF, custom_crf, "medium")
                             else:
-                                print("CRF value must be between 0 and 51")
+                                print(f"CRF value must be between 0 and {crf_max}")
                         except ValueError:
                             print("Please enter a valid number")
                 else:

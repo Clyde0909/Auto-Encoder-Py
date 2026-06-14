@@ -251,7 +251,9 @@ class VideoEncoder:
                 recommendations['video_codec']
             )
             # Update codec type to match the recommended encoder
-            if 'h264' in recommendations['video_codec']:
+            if 'av1' in recommendations['video_codec']:
+                self.encoding_config.set_codec_type(VideoCodec.AV1, recommendations['hw_accel'])
+            elif 'h264' in recommendations['video_codec']:
                 self.encoding_config.set_codec_type(VideoCodec.H264, recommendations['hw_accel'])
             else:
                 self.encoding_config.set_codec_type(VideoCodec.H265, recommendations['hw_accel'])

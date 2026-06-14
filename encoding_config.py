@@ -19,6 +19,7 @@ class VideoCodec(Enum):
     """Video codec types"""
     H264 = "h264"  # H.264/AVC
     H265 = "h265"  # H.265/HEVC
+    AV1 = "av1"    # AV1
 
 
 @dataclass
@@ -40,13 +41,22 @@ class EncodingConfig:
 class EncodingConfigManager:
     """Manages encoding configuration and FFmpeg parameter generation"""
     
-    # Quality presets for CRF encoding
+    # Quality presets for CRF encoding (H.264/H.265: 0-51 range)
     CRF_PRESETS = {
         'ultra_high': 18,   # Near lossless
         'high': 23,         # High quality
         'medium': 28,       # Balanced quality/size
         'low': 33,          # Lower quality, smaller size
         'very_low': 38      # Very low quality
+    }
+    
+    # Quality presets for AV1 CRF encoding (0-63 range)
+    AV1_CRF_PRESETS = {
+        'ultra_high': 22,   # Near lossless
+        'high': 30,         # High quality
+        'medium': 38,       # Balanced quality/size
+        'low': 46,          # Lower quality, smaller size
+        'very_low': 54      # Very low quality
     }
     
     # Bitrate multiplier presets for VBR encoding
@@ -68,8 +78,11 @@ class EncodingConfigManager:
     
     def set_crf_encoding(self, crf_value: float, preset: str = "medium"):
         """Configure for CRF (quality-based) encoding"""
-        # Validate CRF range (0-51 for x264/x265)
-        crf_value = max(0, min(51, crf_value))
+        # Validate CRF range: 0-51 for x264/x265, 0-63 for AV1
+        if self.config.codec_type == VideoCodec.AV1:
+            crf_value = max(0, min(63, crf_value))
+        else:
+            crf_value = max(0, min(51, crf_value))
         
         self.config.method = EncodingMethod.CRF
         self.config.value = crf_value
@@ -90,7 +103,7 @@ class EncodingConfigManager:
         self.config.video_codec = video_codec
     
     def set_codec_type(self, codec_type: VideoCodec, hw_accel: Optional[str] = None):
-        """Set video codec type (H.264 or H.265)"""
+        """Set video codec type (H.264, H.265, or AV1)"""
         self.config.codec_type = codec_type
         
         # Update video codec based on hardware acceleration and codec type
@@ -104,7 +117,7 @@ class EncodingConfigManager:
                     self.config.video_codec = 'h264_qsv'
                 else:
                     self.config.video_codec = 'libx264'
-            else:  # H.265
+            elif codec_type == VideoCodec.H265:
                 if 'nvenc' in self.config.video_codec:
                     self.config.video_codec = 'hevc_nvenc'
                 elif 'amf' in self.config.video_codec:
@@ -113,15 +126,28 @@ class EncodingConfigManager:
                     self.config.video_codec = 'hevc_qsv'
                 else:
                     self.config.video_codec = 'libx265'
+            else:  # AV1
+                if 'nvenc' in self.config.video_codec:
+                    self.config.video_codec = 'av1_nvenc'
+                elif 'amf' in self.config.video_codec:
+                    self.config.video_codec = 'av1_amf'
+                elif 'qsv' in self.config.video_codec:
+                    self.config.video_codec = 'av1_qsv'
+                else:
+                    self.config.video_codec = 'libsvtav1'
         else:
             # Software encoding
             if codec_type == VideoCodec.H264:
                 self.config.video_codec = 'libx264'
-            else:  # H.265
+            elif codec_type == VideoCodec.H265:
                 self.config.video_codec = 'libx265'
+            else:  # AV1
+                self.config.video_codec = 'libsvtav1'
     
     def get_crf_from_preset(self, preset_name: str) -> float:
-        """Get CRF value from preset name"""
+        """Get CRF value from preset name (uses AV1 presets if codec is AV1)"""
+        if self.config.codec_type == VideoCodec.AV1:
+            return self.AV1_CRF_PRESETS.get(preset_name.lower(), 38)
         return self.CRF_PRESETS.get(preset_name.lower(), 23)
     
     def get_vbr_from_preset(self, preset_name: str) -> float:
@@ -159,7 +185,14 @@ class EncodingConfigManager:
         # Add preset only for software encoders and some hardware encoders
         if ('amf' not in self.config.video_codec and 
             'qsv' not in self.config.video_codec):
-            video_params['preset'] = self.config.preset
+            if 'svtav1' in self.config.video_codec:
+                # SVT-AV1 uses numeric preset 0-13 (0=best quality, 13=fastest)
+                video_params['preset'] = self._map_preset_to_svtav1(self.config.preset)
+            elif 'aom' in self.config.video_codec:
+                # libaom-av1 uses cpu-used 0-8 (0=best quality, 8=fastest)
+                video_params['cpu-used'] = self._map_preset_to_aom(self.config.preset)
+            else:
+                video_params['preset'] = self.config.preset
         
         # Method-specific parameters
         if self.config.method == EncodingMethod.CRF:
@@ -189,6 +222,8 @@ class EncodingConfigManager:
             video_params.update(self._get_qsv_optimizations())
         elif 'x265' in self.config.video_codec or 'libx265' in self.config.video_codec:
             video_params.update(self._get_x265_optimizations())
+        elif 'svtav1' in self.config.video_codec or 'aom' in self.config.video_codec:
+            video_params.update(self._get_av1_optimizations())
         
         # Add additional parameters
         video_params.update(self.config.additional_params)
@@ -246,14 +281,76 @@ class EncodingConfigManager:
             'x265-params': 'aq-mode=3:aq-strength=0.8:deblock=1,1'
         }
     
+    def _get_av1_optimizations(self) -> Dict[str, Any]:
+        """Get AV1 software encoder specific optimizations"""
+        optimizations = {
+            'profile:v': 'main',
+        }
+        
+        if 'svtav1' in self.config.video_codec:
+            # SVT-AV1 specific params: film-grain synthesis, adaptive quantization
+            optimizations['svtav1-params'] = (
+                'film-grain=8:film-grain-denoise=0:'
+                'enable-overlays=1:enable-tf=1'
+            )
+        elif 'aom' in self.config.video_codec:
+            # libaom-av1 specific params
+            optimizations['aom-params'] = (
+                'aq-mode=1:enable-cdef=1:enable-restoration=1'
+            )
+        
+        return optimizations
+    
+    @staticmethod
+    def _map_preset_to_svtav1(preset_name: str) -> int:
+        """Map human-readable preset name to SVT-AV1 numeric preset (0-13).
+        0 = best quality/slowest, 13 = fastest/lowest quality."""
+        mapping = {
+            'ultrafast': 13,
+            'superfast': 11,
+            'veryfast': 9,
+            'faster': 7,
+            'fast': 5,
+            'medium': 6,
+            'slow': 4,
+            'slower': 2,
+            'veryslow': 0,
+            'placebo': 0,
+        }
+        return mapping.get(preset_name.lower(), 6)
+    
+    @staticmethod
+    def _map_preset_to_aom(preset_name: str) -> int:
+        """Map human-readable preset name to libaom-av1 cpu-used (0-8).
+        0 = best quality/slowest, 8 = fastest/lowest quality."""
+        mapping = {
+            'ultrafast': 8,
+            'superfast': 7,
+            'veryfast': 6,
+            'faster': 5,
+            'fast': 4,
+            'medium': 3,
+            'slow': 2,
+            'slower': 1,
+            'veryslow': 0,
+            'placebo': 0,
+        }
+        return mapping.get(preset_name.lower(), 3)
+    
     def get_config_summary(self) -> Dict[str, Any]:
         """Get a summary of current encoding configuration"""
+        codec_names = {
+            VideoCodec.H264: 'H.264/AVC',
+            VideoCodec.H265: 'H.265/HEVC',
+            VideoCodec.AV1: 'AV1',
+        }
+        
         summary = {
             'method': self.config.method.value,
             'value': self.config.value,
             'video_codec': self.config.video_codec,
             'codec_type': self.config.codec_type.value,
-            'codec_name': 'H.264/AVC' if self.config.codec_type == VideoCodec.H264 else 'H.265/HEVC',
+            'codec_name': codec_names.get(self.config.codec_type, 'Unknown'),
             'hw_accel': self.config.hw_accel,
             'preset': self.config.preset
         }
@@ -270,16 +367,28 @@ class EncodingConfigManager:
     def _get_crf_quality_description(self) -> str:
         """Get quality description for CRF value"""
         crf = self.config.value
-        if crf <= 18:
-            return "Ultra High Quality (Near Lossless)"
-        elif crf <= 23:
-            return "High Quality"
-        elif crf <= 28:
-            return "Medium Quality (Balanced)"
-        elif crf <= 33:
-            return "Low Quality"
+        if self.config.codec_type == VideoCodec.AV1:
+            if crf <= 22:
+                return "Ultra High Quality (Near Lossless)"
+            elif crf <= 30:
+                return "High Quality"
+            elif crf <= 38:
+                return "Medium Quality (Balanced)"
+            elif crf <= 46:
+                return "Low Quality"
+            else:
+                return "Very Low Quality"
         else:
-            return "Very Low Quality"
+            if crf <= 18:
+                return "Ultra High Quality (Near Lossless)"
+            elif crf <= 23:
+                return "High Quality"
+            elif crf <= 28:
+                return "Medium Quality (Balanced)"
+            elif crf <= 33:
+                return "Low Quality"
+            else:
+                return "Very Low Quality"
     
     def _get_vbr_quality_description(self) -> str:
         """Get quality description for VBR multiplier"""
@@ -299,6 +408,8 @@ class EncodingConfigManager:
         return {
             'crf': {name: {'value': value, 'description': f"CRF {value}"} 
                    for name, value in EncodingConfigManager.CRF_PRESETS.items()},
+            'av1_crf': {name: {'value': value, 'description': f"AV1 CRF {value}"} 
+                       for name, value in EncodingConfigManager.AV1_CRF_PRESETS.items()},
             'vbr': {name: {'value': value, 'description': f"{int(value*100)}% of original"} 
                    for name, value in EncodingConfigManager.VBR_PRESETS.items()}
         }
