@@ -196,11 +196,19 @@ class EncodingConfigManager:
         
         # Method-specific parameters
         if self.config.method == EncodingMethod.CRF:
-            video_params['crf'] = int(self.config.value)
+            # AMF does not implement software CRF. Its quality-based mode is
+            # constant QP (configured below in _get_amf_optimizations).
+            if 'amf' not in self.config.video_codec:
+                video_params['crf'] = int(self.config.value)
         elif self.config.method == EncodingMethod.VBR:
             if original_bitrate:
                 target_bitrate = self.calculate_target_bitrate(original_bitrate)
                 video_params['b:v'] = f"{target_bitrate}"
+                if 'amf' in self.config.video_codec:
+                    # Keep AMF's peak rate close to the requested target. The
+                    # buffer allows normal short-term bitrate fluctuations.
+                    video_params['maxrate'] = f"{int(target_bitrate * 1.10)}"
+                    video_params['bufsize'] = f"{int(target_bitrate * 2)}"
             else:
                 raise ValueError("Original bitrate required for VBR encoding")
         
@@ -250,7 +258,6 @@ class EncodingConfigManager:
         """Get AMD AMF specific optimizations"""
         optimizations = {
             'profile:v': 'main',
-            'level': '4.1'
         }
         
         # Rate control mode
@@ -258,6 +265,12 @@ class EncodingConfigManager:
             optimizations['rc'] = 'vbr_peak'
         else:
             optimizations['rc'] = 'cqp'
+            qp = int(self.config.value)
+            optimizations.update({
+                'qp_i': qp,
+                'qp_p': qp,
+                'qp_b': qp,
+            })
         
         # Quality settings
         optimizations['quality'] = 'balanced'
@@ -356,7 +369,8 @@ class EncodingConfigManager:
         }
         
         if self.config.method == EncodingMethod.CRF:
-            summary['description'] = f"Quality-based encoding (CRF {self.config.value})"
+            quality_mode = "QP" if 'amf' in self.config.video_codec else "CRF"
+            summary['description'] = f"Quality-based encoding ({quality_mode} {self.config.value})"
             summary['quality_preset'] = self._get_crf_quality_description()
         else:
             summary['description'] = f"Bitrate-based encoding ({self.config.value}x multiplier)"

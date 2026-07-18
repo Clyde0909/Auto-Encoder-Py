@@ -362,6 +362,9 @@ class VideoEncoder:
             try:
                 output_stream = input_stream.output(
                     output_path,
+                    # Do not inflate or otherwise alter the audio stream when
+                    # the goal is video compression.
+                    acodec='copy',
                     **ffmpeg_params['video_params']
                 )
                 
@@ -554,11 +557,20 @@ class VideoEncoder:
                         self.processing_stats['total_encoded_size'] += result['encoded_size_mb']
                         
                         # Delete original if requested
-                        if delete_originals:
+                        # Never remove the source when the supposed
+                        # compression produced a larger file.
+                        if delete_originals and (
+                            result['encoded_size_mb'] <= result['original_size_mb']
+                        ):
                             try:
                                 os.remove(video_file.file_path)
                             except Exception as e:
                                 print(f"Warning: Could not delete original file {video_file.file_path}: {e}")
+                        elif delete_originals:
+                            print(
+                                f"Keeping original because encoded file is larger: "
+                                f"{video_file.filename}"
+                            )
                     else:
                         self.processing_stats['failed_files'] += 1
                         self.processing_stats['failed_file_paths'].append(video_file.file_path)

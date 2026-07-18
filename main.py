@@ -174,9 +174,11 @@ class VideoEncoderApp:
         is_av1 = self.encoder.encoding_config.config.codec_type == VideoCodec.AV1
         presets = EncodingConfigManager.AV1_CRF_PRESETS if is_av1 else EncodingConfigManager.CRF_PRESETS
         crf_max = 63 if is_av1 else 51
+        is_amf = 'amf' in self.encoder.encoding_config.config.video_codec
         codec_label = "AV1" if is_av1 else "H.264/H.265"
+        quality_label = "QP" if is_amf else "CRF"
         
-        print(f"\nCRF Quality Presets ({codec_label}):")
+        print(f"\n{quality_label} Quality Presets ({codec_label}{' AMF' if is_amf else ''}):")
         
         options = []
         for i, (name, value) in enumerate(presets.items(), 1):
@@ -187,10 +189,10 @@ class VideoEncoderApp:
                 'low': 'Low Quality (Smaller Size)',
                 'very_low': 'Very Low Quality'
             }.get(name, name.title())
-            print(f"   {i}. {description} - CRF {value}")
+            print(f"   {i}. {description} - {quality_label} {value}")
             options.append((name, value))
         
-        print(f"   {len(options)+1}. Custom CRF value (0-{crf_max})")
+        print(f"   {len(options)+1}. Custom {quality_label} value (0-{crf_max})")
         
         while True:
             try:
@@ -206,9 +208,9 @@ class VideoEncoderApp:
                     # Custom CRF value
                     while True:
                         try:
-                            custom_crf = float(input(f"Enter custom CRF value (0-{crf_max}, lower=higher quality): "))
-                            if 0 <= custom_crf <= crf_max:
-                                return (EncodingMethod.CRF, custom_crf, "medium")
+                            custom_quality = float(input(f"Enter custom {quality_label} value (0-{crf_max}, lower=higher quality): "))
+                            if 0 <= custom_quality <= crf_max:
+                                return (EncodingMethod.CRF, custom_quality, "medium")
                             else:
                                 print(f"CRF value must be between 0 and {crf_max}")
                         except ValueError:
