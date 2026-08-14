@@ -52,11 +52,11 @@ class EncodingConfigManager:
     
     # Quality presets for AV1 CRF encoding (0-63 range)
     AV1_CRF_PRESETS = {
-        'ultra_high': 22,   # Near lossless
-        'high': 30,         # High quality
-        'medium': 38,       # Balanced quality/size
-        'low': 46,          # Lower quality, smaller size
-        'very_low': 54      # Very low quality
+        'ultra_high': 20,   # Near lossless
+        'high': 26,         # High quality
+        'medium': 32,       # Preserve detail with substantial compression
+        'low': 38,          # Lower quality, smaller size
+        'very_low': 46      # Very low quality
     }
     
     # Bitrate multiplier presets for VBR encoding
@@ -196,9 +196,12 @@ class EncodingConfigManager:
         
         # Method-specific parameters
         if self.config.method == EncodingMethod.CRF:
-            # AMF does not implement software CRF. Its quality-based mode is
-            # constant QP (configured below in _get_amf_optimizations).
-            if 'amf' not in self.config.video_codec:
+            # Hardware encoders use their own quality controls, configured in
+            # their codec-specific optimization methods below.
+            if not any(
+                hardware_encoder in self.config.video_codec
+                for hardware_encoder in ('amf', 'nvenc', 'qsv')
+            ):
                 video_params['crf'] = int(self.config.value)
         elif self.config.method == EncodingMethod.VBR:
             if original_bitrate:
@@ -245,6 +248,27 @@ class EncodingConfigManager:
     
     def _get_nvenc_optimizations(self) -> Dict[str, Any]:
         """Get NVIDIA NVENC specific optimizations"""
+        if self.config.codec_type == VideoCodec.AV1:
+            optimizations = {
+                'profile:v': 'main',
+                'preset': 'p7',
+                'tune': 'uhq',
+                'multipass': 'fullres',
+                'rc-lookahead': '32',
+                'b_ref_mode': 'middle',
+                'spatial_aq': '1',
+                'temporal_aq': '1',
+                'aq-strength': '8',
+            }
+            if self.config.method == EncodingMethod.CRF:
+                optimizations.update({
+                    'rc': 'vbr',
+                    'cq': int(self.config.value),
+                })
+            else:
+                optimizations['rc'] = 'vbr'
+            return optimizations
+
         return {
             'rc': 'vbr' if self.config.method == EncodingMethod.VBR else 'cqp',
             'profile:v': 'main',
@@ -256,6 +280,25 @@ class EncodingConfigManager:
     
     def _get_amf_optimizations(self) -> Dict[str, Any]:
         """Get AMD AMF specific optimizations"""
+        if self.config.codec_type == VideoCodec.AV1:
+            optimizations = {
+                'profile:v': 'main',
+                'usage': 'high_quality',
+                'quality': 'high_quality',
+                'preanalysis': '1',
+                'aq_mode': 'caq',
+                'max_b_frames': '3',
+                'high_motion_quality_boost_enable': '1',
+            }
+            if self.config.method == EncodingMethod.CRF:
+                optimizations.update({
+                    'rc': 'qvbr',
+                    'qvbr_quality_level': self._get_amf_qvbr_quality_level(),
+                })
+            else:
+                optimizations['rc'] = 'hqvbr'
+            return optimizations
+
         optimizations = {
             'profile:v': 'main',
         }
@@ -279,6 +322,19 @@ class EncodingConfigManager:
     
     def _get_qsv_optimizations(self) -> Dict[str, Any]:
         """Get Intel QuickSync specific optimizations"""
+        if self.config.codec_type == VideoCodec.AV1:
+            optimizations = {
+                'profile:v': 'main',
+                'preset': 'veryslow',
+                'look_ahead_depth': '40',
+                'extbrc': '1',
+                'adaptive_i': '1',
+                'adaptive_b': '1',
+            }
+            if self.config.method == EncodingMethod.CRF:
+                optimizations['global_quality'] = int(self.config.value)
+            return optimizations
+
         return {
             'profile:v': 'main',
             'level': '4.1',
@@ -301,10 +357,9 @@ class EncodingConfigManager:
         }
         
         if 'svtav1' in self.config.video_codec:
-            # SVT-AV1 specific params: film-grain synthesis, adaptive quantization
+            # Preserve source detail rather than adding synthetic film grain.
             optimizations['svtav1-params'] = (
-                'film-grain=8:film-grain-denoise=0:'
-                'enable-overlays=1:enable-tf=1'
+                'tune=0:film-grain=0:enable-overlays=1:enable-tf=1'
             )
         elif 'aom' in self.config.video_codec:
             # libaom-av1 specific params
@@ -313,6 +368,10 @@ class EncodingConfigManager:
             )
         
         return optimizations
+
+    def _get_amf_qvbr_quality_level(self) -> int:
+        """Map the CRF-style AV1 scale to AMF's higher-is-better QVBR scale."""
+        return max(1, min(51, 63 - int(self.config.value)))
     
     @staticmethod
     def _map_preset_to_svtav1(preset_name: str) -> int:
